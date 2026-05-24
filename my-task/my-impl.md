@@ -104,248 +104,44 @@ memory-embeddings = ["fastembed>=0.3.0"]
 
 ## 本地部署与运行
 
-### 环境要求
-
-| 依赖 | 版本 | 说明 |
-|------|------|------|
-| Python | 3.11+ | 必须 |
-| uv | 最新 | 推荐的包管理器，[安装文档](https://docs.astral.sh/uv/) |
-| Node.js | 20+ | 可选，仅浏览器工具需要 |
-
-> **两种部署路径**：
-> - **A. 已经装过 Hermes**（pip 装的 / NousResearch 仓库 clone 的 / `setup-hermes.sh` 装的）→ 直接看下方 [已有安装如何切换到带 tiering 的版本](#已有安装如何切换到带-tiering-的版本)
-> - **B. 全新机器，从零开始** → 按"第一步—第五步"走
-
-### 第一步：克隆并安装
-
-本次 Tiered Memory 改动**还未合并到上游 NousResearch/hermes-agent**，必须从包含改动的 fork 克隆：
+需要 Python 3.11+，推荐用 [uv](https://docs.astral.sh/uv/) 管 venv。
 
 ```bash
+# 1. 从 fork 克隆（改动还没合到上游 NousResearch）
 git clone --recurse-submodules https://github.com/LiuXinchen1997/hermes-agent.git
 cd hermes-agent
 
-# 创建 Python 3.11 虚拟环境
+# 2. 装 hermes 本身 + 依赖（在 clone 出来的目录下跑）
+#    `-e .`  ─ 把当前目录作为「可编辑包」安装，这一步就是 *安装 hermes*
+#    `[all]` ─ Hermes 全功能 extras（多 provider、TTS、网关等）
+#    `[dev]` ─ pytest / ruff 等开发工具，跑测试用
+#    `[memory-embeddings]` ─ 本次改动专属：本地 BGE 嵌入模型（不装会自动降级到 Jaccard 关键词匹配）
 uv venv venv --python 3.11
 export VIRTUAL_ENV="$(pwd)/venv"
+uv pip install -e ".[all,dev,memory-embeddings]"
 
-# 安装所有依赖（含开发工具）
-uv pip install -e ".[all,dev]"
-```
+# 装完后会有 venv/bin/hermes 可执行文件，验证一下：
+venv/bin/hermes --version
 
-> 上游 NousResearch 仓库不含本次改动；从那里克隆得到的是不带 Tiered Memory 的原版 Hermes。后续如果上游合并了本次 PR，可以直接从 `NousResearch/hermes-agent` 克隆。
-
-如果需要启用**语义嵌入**（提升 Tiered Memory 召回质量），额外安装：
-
-```bash
-uv pip install -e ".[memory-embeddings]"
-# 首次运行时会自动下载 BAAI/bge-small-zh-v1.5 模型（约 90MB）
-```
-
-不安装 `memory-embeddings` 时会自动降级为 Jaccard 关键词匹配，功能正常但召回质量较弱。
-
-### 第二步：配置
-
-```bash
-# 创建 hermes 运行目录
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
-
-# 复制示例配置
+# 3. 配 LLM key（按 Hermes 标准流程，如还没配过）
+mkdir -p ~/.hermes
 cp cli-config.yaml.example ~/.hermes/config.yaml
+echo "OPENROUTER_API_KEY=你的key" >> ~/.hermes/.env  # 或 ANTHROPIC_API_KEY
 
-# 创建环境变量文件，填入 LLM API Key（二选一）
-echo "OPENROUTER_API_KEY=你的key" >> ~/.hermes/.env
-# 或者
-echo "ANTHROPIC_API_KEY=你的key" >> ~/.hermes/.env
+# 4. 开 tiering（编辑 ~/.hermes/config.yaml 在 memory: 段下加）
+#    memory:
+#      tiering:
+#        enabled: true
+#    其它键全部用默认即可；完整字段见 docs/memory_tiering.md
+
+# 5. 启动
+venv/bin/hermes
 ```
 
-### 第三步：开启三层记忆（Tiered Memory）
+首次启动时若已有旧 `~/.hermes/memories/MEMORY.md`，会自动迁移为 `WORKING.jsonl`（原文件保留作备份）。
 
-编辑 `~/.hermes/config.yaml`，在 `memory:` 段落下添加 `tiering` 配置：
-
-```yaml
-memory:
-  memory_enabled: true
-  user_profile_enabled: true
-  user_char_limit: 1375          # T0 (USER.md) 上限；T1 启用后仍生效
-  # memory_char_limit: 2200      # 旧的 MEMORY.md 上限；tiering 开启后**不再使用**
-
-  # ── 三层记忆（本次改动新增）────────────────────
-  tiering:
-    enabled: true                # 总开关；false 则退回旧的平铺 MemoryStore
-    prefer_local: true           # true = 优先用本地 fastembed；false = 直接用 Jaccard
-    t1_char_limit: 3000          # T1 工作记忆字符上限，超出触发驱逐到 T2
-    metrics_enabled: true        # 写指标到 ~/.hermes/logs/memory_metrics.jsonl
-    # 下面三个是 *eviction* 打分参数（决定哪条降级到 T2）
-    tau_days: 14.0               # 近期衰减半衰期（天）
-    beta: 0.2                    # 近期衰减权重
-    gamma: 0.1                   # 召回频次权重
-
-    retrieval:
-      enabled: true              # 每轮对话前是否自动召回
-      k: 5                       # 最多召回 5 条
-      min_similarity: 0.5        # 相似度阈值（fastembed）；Jaccard 建议改为 0.1
-      # 下面四个是 *recall* 打分参数（决定哪条注入到 user_message）
-      alpha: 0.7                 # 语义相似度权重
-      beta: 0.2                  # 近期衰减权重
-      gamma: 0.1                 # 召回频次权重
-      tau_days: 14.0             # 近期衰减半衰期
-```
-
-> Tiering 开启后，`memory_char_limit` 字段被忽略（T1 用独立的 `t1_char_limit`）。`user_char_limit` 仍然作用于 T0（USER.md）。
->
-> `tiering.{tau_days, beta, gamma}` 用于 **eviction**（决定哪条 T1 条目降级到 T2）；
-> `tiering.retrieval.{tau_days, alpha, beta, gamma}` 用于 **recall**（决定每轮哪些条目注入到 user_message）。两组参数互相独立，可以分别调。
-
-### 第四步：运行 Agent
+跑测试：
 
 ```bash
-# 全局软链接（可选，方便从任意目录启动）
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-
-# 验证安装
-hermes doctor
-
-# 启动交互式对话
-hermes
+venv/bin/pytest tests/tools/test_memory_tiering.py -v
 ```
-
-首次启动后，如果磁盘上存在旧的 `MEMORY.md`，会自动迁移为 `WORKING.jsonl`（T1）；新增的记忆从此都写入 `WORKING.jsonl`，旧文件保留作为备份。
-
-### 第五步：运行测试
-
-```bash
-# 推荐方式（与 CI 一致，4 个 worker 并行）
-scripts/run_tests.sh
-
-# 只跑 Tiered Memory 相关测试
-pytest tests/tools/test_memory_tiering.py -v
-```
-
-测试全部使用 `KeywordEmbedder`，无需安装 `fastembed` 也可运行。
-
-### 验证 Tiered Memory 是否生效
-
-启动 agent 后，告诉它记住一些事情（例如"记住我喜欢 Python"），然后在新对话中问一个相关问题。如果 `~/.hermes/memories/WORKING.jsonl` 文件存在并有内容，且 `~/.hermes/logs/memory_metrics.jsonl` 中出现了 `"event":"recall"` 的记录，说明三层记忆已正常工作。
-
-```bash
-# 查看 T1 工作记忆内容（JSONL 一行一条，单独 pretty-print 每行）
-cat ~/.hermes/memories/WORKING.jsonl | while IFS= read -r line; do
-  echo "$line" | python3 -m json.tool
-done
-# 或者用 jq：
-# jq -s . ~/.hermes/memories/WORKING.jsonl
-
-# 实时跟踪召回指标
-tail -f ~/.hermes/logs/memory_metrics.jsonl
-```
-
----
-
-## 已有安装如何切换到带 tiering 的版本
-
-`~/.hermes/`（配置、memories、skills、logs、cron）**不需要动**——本次改动只换了代码层，原有数据全部保留并会自动迁移（旧 `MEMORY.md` → 新 `WORKING.jsonl`）。
-
-根据你之前怎么装的 Hermes，选对应的路径：
-
-### 场景 A：原来是 `pip install hermes-agent`
-
-```bash
-# 1. 卸载 PyPI 上的官方版
-pip uninstall hermes-agent
-
-# 2. 克隆 fork 并以可编辑模式重装
-git clone --recurse-submodules https://github.com/LiuXinchen1997/hermes-agent.git ~/hermes-agent-tiered
-cd ~/hermes-agent-tiered
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
-uv pip install -e ".[all,dev,memory-embeddings]"
-
-# 3. 让 hermes 命令指向新装的
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-```
-
-`~/.hermes/config.yaml` 不动，下面的"开启 tiering 配置"那一步照走。
-
-### 场景 B：已经 clone 了 NousResearch/hermes-agent 在本地
-
-在原仓库目录里加我的 fork 作为新 remote，把 tiering 改动 merge 进来：
-
-```bash
-cd /path/to/your/hermes-agent  # 你已有的 NousResearch clone
-
-# 加我的 fork 作为新 remote
-git remote add tiered git@github.com:LiuXinchen1997/hermes-agent.git
-git fetch tiered
-
-# 切到一个本地分支再合并（避免污染你的 main）
-git checkout -b try-tiering
-git merge tiered/main
-
-# 如果以前没有 editable 安装，做一下
-uv pip install -e ".[all,dev,memory-embeddings]"
-```
-
-如果 merge 有冲突，多半是 `pyproject.toml` 的 `optional-dependencies` 段。挑一个保留即可。
-
-### 场景 C：用 `setup-hermes.sh` 一键装的
-
-`setup-hermes.sh` 默认从 NousResearch clone 到 `~/hermes-agent`。两种做法：
-
-```bash
-# 做法 1（推荐）：在原目录加 remote 合并（参照场景 B 步骤）
-cd ~/hermes-agent
-git remote add tiered git@github.com:LiuXinchen1997/hermes-agent.git
-git fetch tiered
-git checkout -b try-tiering
-git merge tiered/main
-# venv 已经存在不用动，但要刷新依赖：
-~/.hermes/venv/bin/pip install -e ".[memory-embeddings]" --upgrade
-
-# 做法 2：直接 reset 到 fork main（**会丢本地未提交改动**）
-cd ~/hermes-agent
-git remote set-url origin git@github.com:LiuXinchen1997/hermes-agent.git
-git fetch origin
-git reset --hard origin/main
-~/.hermes/venv/bin/pip install -e ".[memory-embeddings]" --upgrade
-```
-
-### 三个场景都一样：开启 tiering 配置
-
-打开 `~/.hermes/config.yaml`，在 `memory:` 段下追加本文档 [第三步](#第三步开启三层记忆tiered-memory) 给出的 `tiering:` 配置块（可以照搬，全部默认值就够用）。
-
-### 验证
-
-```bash
-# 1. 检查 hermes 用的是不是 fork 版本
-which hermes
-python3 -c "import tools.memory_tiered_store; print('tiering available')"
-# 应该输出 "tiering available"，否则说明装的还是 NousResearch 版
-
-# 2. 启动 agent，告诉它一件事让它记住
-hermes
-> 记住我喜欢用 ruff 不喜欢 black
-
-# 3. 退出后看磁盘
-ls -l ~/.hermes/memories/WORKING.jsonl
-# 应该存在，且内容包含你刚说的话
-
-# 4. 看指标
-tail -3 ~/.hermes/logs/memory_metrics.jsonl
-# 应该看到 {"event":"add", ...} 和后续的 {"event":"recall", ...}
-```
-
-### 如何回滚到原版 Hermes
-
-只需要把 config 里的 tiering 关掉：
-
-```yaml
-memory:
-  tiering:
-    enabled: false   # 关闭后所有 memory 操作回到平铺 MemoryStore
-```
-
-`WORKING.jsonl` / `COLD.jsonl` 留在盘上没人读，旧的 `MEMORY.md` 还在（迁移时不删），重新生效。
-
-如果想彻底卸载，按你原来的安装方式反过来：场景 A 用 `pip uninstall hermes-agent` + 重新 `pip install hermes-agent`；场景 B/C 切回 `main` 分支即可（`git checkout main`，删 `try-tiering`）。
