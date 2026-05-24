@@ -109,8 +109,16 @@ When `add()` would put T1 over `t1_char_limit`:
 4. The just-added entry is **protected** from eviction even if it pushes the
    buffer over
 
-T2 entries are not auto-injected. They can still be hit via `session_search`.
-There is no automatic "promote T2 back to T1" path in this version.
+T2 entries are not auto-injected, and **in the current (demo) implementation
+they have no read path at all** — `COLD.jsonl` is written by eviction but
+nothing reads it back. Note that `session_search` indexes the SQLite session
+message DB (past conversation transcripts), not memory files; it does not
+hit T2.
+
+T2 entries are kept on disk with full metadata (id, embedding, recall_count,
+created_at) so a future restore/archive-search API can use them. For now,
+treat eviction as a soft-delete: to recover an entry, manually inspect
+`~/.hermes/memories/COLD.jsonl` and re-`memory(add, ...)` its text.
 
 ## Migration from legacy MEMORY.md
 
@@ -131,9 +139,18 @@ to `~/.hermes/logs/memory_metrics.jsonl`:
 
 ```jsonl
 {"ts":"...","event":"add","session_id":"...","t1_count_after":12,"t1_chars_after":1850,"evicted":0}
+{"ts":"...","event":"add_dedup_t1","session_id":"...","matched_id":"...","t1_count":12}
+{"ts":"...","event":"add_dup_in_t2","session_id":"...","matched_t2_id":"...","prior_recall_count":3}
 {"ts":"...","event":"recall","session_id":"...","k_requested":5,"k_returned":3,"candidate_count":15,"min_similarity":0.5,"top_score":0.71,"top_similarity":0.68}
 {"ts":"...","event":"evict","session_id":"...","victim_id":"...","victim_age_days":28.4,"victim_recall_count":0}
 ```
+
+Event reference:
+  - `add` — new T1 entry created
+  - `add_dedup_t1` — write rejected because identical text already in T1
+  - `add_dup_in_t2` — write proceeded, but identical text was found in cold
+    archive (observability signal — agent is re-learning archived facts)
+  - `recall` / `replace` / `remove` / `evict` — self-explanatory
 
 Use these to evaluate whether tiering is actually helping. The metrics file
 is append-only and untruncated — rotate or clean it manually if it grows.

@@ -16,7 +16,7 @@
 |------|------|------|
 | T0 | `USER.md` | 长期用户画像，继承自 MemoryStore，始终注入 system prompt |
 | T1 | `WORKING.jsonl` | 工作记忆，带嵌入向量，按需召回 |
-| T2 | `COLD.jsonl` | 冷存档，只追加不自动注入 |
+| T2 | `COLD.jsonl` | 冷存档，**demo 阶段是只写归档**——驱逐时追加，没有生产读回路径（要恢复某条只能手动 `cat` + 重新 `memory(add)`，未来计划加 `restore` API） |
 
 核心机制：
 - **T1 → T2 自动驱逐**：新增记忆后若 T1 总字符超过上限（默认 3000），自动将"分数最低"的条目降级到 T2（依据近期使用时间 + 召回频次打分选出受害者）。
@@ -43,7 +43,7 @@ score(e) = α · cosine(embed(msg), e.embedding)
 ```
 
 - **α**（默认 0.7）：语义相似度权重
-- **β**（默认 0.2）：近期使用衰减权重（τ=14天半衰期）
+- **β**（默认 0.2）：近期使用衰减权重（τ=14天，是指数衰减时间常数——`exp(-Δt/τ)`，t=14d 时衰减到 ~0.37；若需要 14d 半衰期请调小 τ 到约 9.7）
 - **γ**（默认 0.1）：召回频次权重
 
 召回命中的条目自动更新 `last_recalled_at` 和 `recall_count`（持久化到磁盘）。
@@ -52,11 +52,11 @@ score(e) = α · cosine(embed(msg), e.embedding)
 
 ### `tools/memory_metrics.py` — 指标记录器
 
-以 append-only JSONL 格式写入 `~/.hermes/logs/memory_metrics.jsonl`，记录 recall/add/replace/remove/evict 事件，用于评估分层效果。所有写入失败静默吞掉，不影响主流程。
+以 append-only JSONL 格式写入 `~/.hermes/logs/memory_metrics.jsonl`，记录 `recall` / `add` / `add_dedup_t1`（写入命中 T1 重复）/ `add_dup_in_t2`（写入文本已在冷归档）/ `replace` / `remove` / `evict` 七类事件，用于评估分层效果。所有写入失败静默吞掉，不影响主流程。
 
 ### `tests/tools/test_memory_tiering.py` — 测试套件
 
-覆盖 Entry 序列化、TieredMemoryStore 增删改、MemoryRetriever 召回逻辑、KeywordEmbedder 相似度等核心路径，全部使用 KeywordEmbedder（无需模型）。
+覆盖 Entry 序列化、TieredMemoryStore 增删改、MemoryRetriever 召回逻辑、Eviction 选择、Embedder batch 接口、StreamingContextScrubber 协同等核心路径。默认走 KeywordEmbedder（无需模型即可全部通过）；另有 `TestFastembedEmbedder` 用 `pytest.importorskip("fastembed")` 兜底——装了 fastembed 顺便会跑 BGE 的 sanity 检查。
 
 ---
 

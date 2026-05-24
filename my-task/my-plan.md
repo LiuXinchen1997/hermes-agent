@@ -9,9 +9,9 @@
 
 Memory 子系统当前实现的三个结构性缺陷：
 
-- `MemoryStore` 是平铺 `List[str]`，仅有字符上限校验，无 entry-level metadata（[memory_tool.py:107-142](../tools/memory_tool.py#L107-L142)）
+- `MemoryStore` 是平铺 `List[str]`，仅有字符上限校验，无 entry-level metadata（[memory_tool.py:138 起的 `class MemoryStore`](../tools/memory_tool.py#L138)）
 - system prompt 全量注入冻结快照，所有条目权重相同，无相关度筛选
-- 满载时 `add()` 直接 return error，无 graceful eviction（[memory_tool.py:250-261](../tools/memory_tool.py#L250-L261)）
+- 满载时 `add()` 直接 return error，无 graceful eviction（[memory_tool.py:264 起的 `def add`](../tools/memory_tool.py#L264) 内 "exceed the limit" 分支）
 
 净表现：撞 2200 字符即 reject；过期备忘和当前偏好同等占 prompt 预算；agent 学到新事实时必须先手动 remove 旧的腾位置。
 
@@ -25,7 +25,7 @@ Memory 子系统当前实现的三个结构性缺陷：
 |---|---|---|---|
 | **T0** 长期用户画像 | `USER.md` (沿用) | 1375 字符（沿用 `MemoryStore.user_char_limit`，保持向后兼容；可在 config 收紧到 500） | 会话起始一次性 freeze，整轮注入 system prompt |
 | **T1** 工作记忆 | `WORKING.jsonl` (新) | 3000 字符 (软) | 每轮按相关度召回 top-5，注入 user message 头部 |
-| **T2** 冷存档 | `COLD.jsonl` (新) | 无 | 不主动注入，`session_search` 可命中 |
+| **T2** 冷存档 | `COLD.jsonl` (新) | 无 | 不主动注入。**demo 中是只写归档**：T1 撞限驱逐时落盘，但生产代码无读回路径（既不进 prompt 也不被 session_search 索引）；要查需手动 `cat`，要回流需未来加 `memory(action="restore", id=...)` API（未实现） |
 
 T1 / T2 entry schema：
 
@@ -35,7 +35,9 @@ T1 / T2 entry schema：
  "recall_count": 0, "embedding": [f32; 512]}
 ```
 
-Tier 转换只支持单向 T1 → T2（见 §1.3 eviction）。T2 → T1 和 T0 ↔ T1 都不做：T2 通过 `session_search` 单次取用即可，不必回流；T0 是用户身份，由用户/agent 显式写。
+Tier 转换只支持单向 T1 → T2（见 §1.3 eviction）。T2 → T1 和 T0 ↔ T1 都不做。
+
+> **demo 阶段 T2 是只写的**——本意是给未来加 `memory(action="restore", id=...)` API 留数据，但目前没有任何代码读 `COLD.jsonl`（注意 `session_search` 工具索引的是 `~/.hermes/sessions/*.db` 的对话历史 FTS5，**不**索引 memory 文件）。被驱逐的条目语义等价于"软删除带数据保留"——用户/agent 想找回得自己 `cat ~/.hermes/memories/COLD.jsonl` 然后重新 `memory(add, ...)`。T0 是用户身份，由用户/agent 显式写。
 
 `memory(add)` 写入路径：注入 in-memory T1 列表 + 同步算 embedding 写盘（fastembed 单次推理 8-15ms，对工具响应可接受）。Tier 概念对 agent 完全透明——agent 看到的还是 `target="memory"` / `target="user"` 两个选项，和现状一致。
 
@@ -77,7 +79,7 @@ score(e) = α · cosine(embed(msg), e.embedding)
 2. 选 bottom-1 demote 到 T2：追加写 `COLD.jsonl`，从 `WORKING.jsonl` 删除
 3. 重新校验容量，仍超限继续 demote
 
-T1 → T2 是 entry 完整搬迁（包括 embedding），T2 保留所有 metadata 以便日后 `session_search` 仍能命中。
+T1 → T2 是 entry 完整搬迁（包括 embedding），T2 保留所有 metadata（id、embedding、recall_count、created_at），为未来加入 restore / archive 检索 API 留数据；demo 阶段无回读路径（见 §1.1 末段说明）。
 
 ### 1.4 embedding 后端
 
@@ -144,15 +146,19 @@ memory(add):
 
 ## 4. Feature flag 与失败模式
 
-| 开关 | 默认 | 关掉之后 |
+| 配置键 | 默认 | 关掉之后 |
 |---|---|---|
-| `memory.tiering.enabled` | true | 回到平铺 MEMORY.md（现状） |
-| `memory.retrieval.enabled` | true | T1 结构保留但不做召回 |
+| `memory.tiering.enabled` | **false**（demo 阶段 opt-in，保 backward compat） | 用平铺 MemoryStore（现状） |
+| `memory.tiering.retrieval.enabled` | true | T1 结构保留但不做召回（仅在 tiering 开了的前提下有意义） |
+
+> 注意 retrieval 配置是**嵌套在 tiering 下**的：`memory.tiering.retrieval.enabled`，不是 top-level 的 `memory.retrieval.enabled`。
 
 | 失败模式 | 处理 |
 |---|---|
-| embedding 模型加载失败 | 自动降级到 Jaccard 关键词检索 |
+| embedding 模型加载失败 | 自动降级到 Jaccard 关键词检索（仍走 tiering 路径） |
+| TieredMemoryStore 初始化抛异常（任意原因） | 自动 fallback 到旧 MemoryStore，agent 永远不因此拒绝启动 |
 | 召回噪声（top-K 都不相关） | `min_similarity` 阈值（fastembed 默认 0.5 / Jaccard 0.1）拦截；不注入空块 |
+| recall 调用本身抛异常 | try/except 静默，本轮不注入但对话继续 |
 | T2 文件膨胀 | 本期不处理（不进 prompt 不影响 token cost） |
 
 ---

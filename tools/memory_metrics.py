@@ -6,11 +6,18 @@ tiering is actually helping (recall hit rate, eviction frequency, write
 churn).
 
 Events:
-  recall  — emitted on every MemoryRetriever.recall() call
-  add     — emitted on every TieredMemoryStore._add_t1 success
-  replace — emitted on every TieredMemoryStore._replace_t1 success
-  remove  — emitted on every TieredMemoryStore._remove_t1 success
-  evict   — emitted on every T1 → T2 demotion
+  recall        — emitted on every MemoryRetriever.recall() call
+  add           — emitted on every TieredMemoryStore._add_t1 success
+  add_dedup_t1  — emitted when an add() matches an existing T1 entry
+                  (no new write; observability of agent write churn)
+  add_dup_in_t2 — emitted when an add() doesn't match T1 but the same
+                  text already exists in T2 (cold archive). The add
+                  still proceeds as a fresh T1 entry — this event lets
+                  callers see how often agents re-learn things the
+                  system already archived.
+  replace       — emitted on every TieredMemoryStore._replace_t1 success
+  remove        — emitted on every TieredMemoryStore._remove_t1 success
+  evict         — emitted on every T1 → T2 demotion
 
 Design:
   - Append-only, single line per event, no rotation (call site is low-rate).

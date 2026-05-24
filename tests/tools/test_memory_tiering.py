@@ -265,6 +265,139 @@ class TestT1Add:
         assert e.embedding == [0.5, 0.5, 0.5]
 
 
+class TestCrossTierDedup:
+    """Re-adding text that was previously evicted to T2 surfaces an
+    observability signal — but does NOT auto-promote the T2 entry
+    (T2 → T1 path is deferred per design)."""
+
+    def test_t2_match_surfaced_in_response(self, patched_memory_dir, embedder):
+        s = TieredMemoryStore(embedder=embedder, t1_char_limit=50)
+        s.load_from_disk()
+        # Add and force eviction to T2
+        s.add("memory", "user prefers pnpm over npm")
+        for i in range(3):
+            s.add("memory", f"filler entry number {i} with extra text here")
+        # Confirm the pnpm entry was demoted
+        assert s.t2_count() >= 1, "expected pnpm entry to be evicted to T2"
+        # Re-add the same text
+        r = s.add("memory", "user prefers pnpm over npm")
+        assert r["success"]
+        assert "previously_archived" in r, (
+            f"expected previously_archived field, got keys: {list(r.keys())}"
+        )
+        pa = r["previously_archived"]
+        assert "id" in pa
+        assert "archived_at" in pa
+        assert "prior_recall_count" in pa
+        # Verify the message hints at this
+        assert "cold archive" in r["message"].lower() or "T2" in r["message"]
+
+    def test_t1_dedup_takes_precedence_over_t2_scan(self, store):
+        """If text exists in both T1 (live) and T2 (legacy), T1 dedup
+        wins — no T2 scan happens, no `previously_archived` in response."""
+        store.add("memory", "fact A")
+        r = store.add("memory", "fact A")
+        assert r["success"]
+        assert "duplicate" in r["message"].lower()
+        assert "previously_archived" not in r
+
+    def test_no_t2_no_match_field(self, store):
+        """Fresh add with empty T2 must not include previously_archived."""
+        r = store.add("memory", "fresh new entry")
+        assert r["success"]
+        assert "previously_archived" not in r
+
+    def test_t2_find_returns_most_recent(self, patched_memory_dir, embedder):
+        """If the same text exists in T2 multiple times (legacy data),
+        `_find_in_t2` picks the most-recently-archived entry."""
+        from tools.memory_tiered_store import Entry, _now_iso
+        # Hand-write two T2 entries with the same text but different created_at
+        cold = patched_memory_dir / "COLD.jsonl"
+        old = Entry(
+            id="OLD", text="dupe text", tier=2,
+            created_at="2020-01-01T00:00:00+00:00",
+        )
+        new = Entry(
+            id="NEW", text="dupe text", tier=2,
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+        cold.write_text(old.to_jsonl() + "\n" + new.to_jsonl() + "\n", encoding="utf-8")
+
+        s = TieredMemoryStore(embedder=embedder, t1_char_limit=300)
+        s.load_from_disk()
+        r = s.add("memory", "dupe text")
+        assert r["success"]
+        assert "previously_archived" in r
+        assert r["previously_archived"]["id"] == "NEW"  # the newer one
+
+
+class TestT2CountStream:
+    """t2_count should stream-read so a multi-MB COLD.jsonl doesn't
+    load wholesale into memory."""
+
+    def test_counts_lines(self, store, patched_memory_dir):
+        # Force a few evictions
+        for i in range(10):
+            store.add("memory", f"entry {i} with padding text taking up space")
+        assert store.t2_count() == sum(
+            1 for line in (patched_memory_dir / "COLD.jsonl").read_text().splitlines()
+            if line.strip()
+        )
+
+    def test_zero_when_no_file(self, store):
+        assert store.t2_count() == 0
+
+
+class TestDedupMetric:
+    """T1 dedup should emit an `add_dedup_t1` metric event."""
+
+    def test_dedup_emits_metric(self, patched_memory_dir, embedder, tmp_path):
+        from tools.memory_metrics import MemoryMetrics
+        log_path = tmp_path / "metrics.jsonl"
+        metrics = MemoryMetrics(session_id="test", log_path=log_path)
+
+        s = TieredMemoryStore(
+            embedder=embedder, t1_char_limit=300, metrics=metrics,
+        )
+        s.load_from_disk()
+        s.add("memory", "fact A")
+        s.add("memory", "fact A")  # dedup hit
+
+        events = [
+            json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
+        ]
+        event_types = [e["event"] for e in events]
+        assert "add" in event_types  # the first add
+        assert "add_dedup_t1" in event_types  # the second add hit dedup
+        dedup_event = next(e for e in events if e["event"] == "add_dedup_t1")
+        assert "matched_id" in dedup_event
+        assert dedup_event["t1_count"] == 1
+
+    def test_t2_dup_emits_metric(self, patched_memory_dir, embedder, tmp_path):
+        from tools.memory_metrics import MemoryMetrics
+        log_path = tmp_path / "metrics.jsonl"
+        metrics = MemoryMetrics(session_id="test", log_path=log_path)
+
+        s = TieredMemoryStore(
+            embedder=embedder, t1_char_limit=50, metrics=metrics,
+        )
+        s.load_from_disk()
+        s.add("memory", "evict-me text")
+        # Force eviction
+        for i in range(3):
+            s.add("memory", f"filler text number {i} that is longish")
+        # Re-add the original text — should hit T2
+        s.add("memory", "evict-me text")
+
+        events = [
+            json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
+        ]
+        event_types = [e["event"] for e in events]
+        assert "add_dup_in_t2" in event_types, (
+            f"expected add_dup_in_t2 event, got: {event_types}"
+        )
+
+
 class TestT1Replace:
     def test_replace_existing(self, store):
         store.add("memory", "Python 3.11 project")

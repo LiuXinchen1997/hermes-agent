@@ -236,12 +236,45 @@ class TieredMemoryStore(MemoryStore):
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        # Exact-text dedup
+        # Exact-text dedup against T1
         for e in self._t1:
             if e.text == content:
+                if self.metrics is not None:
+                    try:
+                        self.metrics.record(
+                            "add_dedup_t1",
+                            matched_id=e.id,
+                            t1_count=len(self._t1),
+                        )
+                    except Exception:
+                        pass
                 return self._t1_response(
                     message="Entry already exists (no duplicate added).",
                 )
+
+        # Cross-tier observability: same text might exist in T2 (cold
+        # archive) from a previous eviction. We do NOT auto-promote it
+        # back (T2 → T1 path is deferred — see docs/memory_tiering.md),
+        # but we surface the fact in the tool response and metrics so
+        # callers know they're re-adding something the system already
+        # had at some point.
+        t2_match_info: Optional[Dict[str, Any]] = None
+        t2_match = self._find_in_t2(content)
+        if t2_match is not None:
+            t2_match_info = {
+                "id": t2_match.id,
+                "archived_at": t2_match.last_recalled_at or t2_match.created_at,
+                "prior_recall_count": t2_match.recall_count,
+            }
+            if self.metrics is not None:
+                try:
+                    self.metrics.record(
+                        "add_dup_in_t2",
+                        matched_t2_id=t2_match.id,
+                        prior_recall_count=t2_match.recall_count,
+                    )
+                except Exception:
+                    pass
 
         emb = self.embedder.encode(content) if self.embedder else None
         new_entry = Entry(
@@ -284,11 +317,22 @@ class TieredMemoryStore(MemoryStore):
                 )
             except Exception:
                 pass
-        return self._t1_response(
-            message="Entry added.",
+        message = "Entry added."
+        if t2_match_info is not None:
+            message += (
+                " Note: an entry with identical text was previously in "
+                "the cold archive (T2). See `previously_archived` for the "
+                "old id; this add created a new T1 entry rather than "
+                "promoting from T2."
+            )
+        response = self._t1_response(
+            message=message,
             evicted=evicted_summaries,
             added_id=new_entry.id,
         )
+        if t2_match_info is not None:
+            response["previously_archived"] = t2_match_info
+        return response
 
     def _replace_t1(self, old_text: str, new_content: str) -> Dict[str, Any]:
         old_text = old_text.strip()
@@ -406,12 +450,48 @@ class TieredMemoryStore(MemoryStore):
         return self._t1_char_count()
 
     def t2_count(self) -> int:
+        """Count non-blank lines in COLD.jsonl. Stream-read so a multi-MB
+        archive doesn't load wholesale into memory just for a diagnostic."""
         path = self._t2_path()
         if not path.exists():
             return 0
-        return sum(
-            1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
-        )
+        count = 0
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    count += 1
+        return count
+
+    def _find_in_t2(self, text: str) -> Optional[Entry]:
+        """Stream-scan COLD.jsonl for an entry whose text matches exactly.
+
+        Returns the most-recently-archived match (by created_at), or None.
+        Called from `_add_t1` for cross-tier dedup observability —
+        intentionally does NOT promote the match back to T1 (T2 → T1
+        path is deferred). Cost is O(N) over T2; acceptable for demo
+        scale where T2 is in the kilobytes-to-low-megabytes range.
+        """
+        path = self._t2_path()
+        if not path.exists():
+            return None
+        most_recent: Optional[Entry] = None
+        most_recent_ts = ""
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = Entry.from_jsonl(line)
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    continue
+                if entry.text != text:
+                    continue
+                ts = entry.created_at or ""
+                if ts > most_recent_ts:
+                    most_recent = entry
+                    most_recent_ts = ts
+        return most_recent
 
     # ─── eviction internals ──────────────────────────────────────────────
 
