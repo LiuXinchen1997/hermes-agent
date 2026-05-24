@@ -1,0 +1,243 @@
+{
+  "model": "deepseek-chat",
+  "total_memories": 20,
+  "interference_entries": [
+    "Some frontend helper scripts used flake8 for style checks but those scripts were removed",
+    "Legacy branches still contain webpack configuration files from before the 2023 migration",
+    "A handful of backend test helpers are written in JS and use the mocha runner",
+    "Several Python backend services need npm available in the container to invoke frontend assets"
+  ],
+  "mode_a": {
+    "system_chars": 1718,
+    "memory_block_chars": 1510,
+    "results": [
+      {
+        "turn": "T1",
+        "query": "How do I set up linting for a new Python project?",
+        "response": "Use **ruff** for linting. Add this to `pyproject.toml`:\n\n```toml\n[tool.ruff]\ntarget-version = \"py311\"\nline-length = 100\n\n[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\", \"N\", \"W\", \"UP\"]\n```\n\nThen run:\n\n```bash\npoetry add --group dev ruff\n```\n\nCI will run `ruff check .` and `ruff format --check .`.",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "ruff"
+          ],
+          "noises": []
+        }
+      },
+      {
+        "turn": "T2",
+        "query": "What package manager should I use for a JavaScript project?",
+        "response": "pnpm workspace",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "pnpm"
+          ],
+          "noises": []
+        }
+      },
+      {
+        "turn": "T3",
+        "query": "How do I write unit tests in Python?",
+        "response": "Use pytest with test files named `test_*.py` in your project's `tests/` directory. Place shared fixtures in `tests/conftest.py`.\n\nExample:\n```python\n# tests/test_user_service.py\nfrom myapp.user_service import create_user\n\ndef test_create_user_success(db_session):\n    user = create_user(db_session, name=\"Alice\")\n    assert user.name == \"Alice\"\n    assert user.id is not None\n```\n\nRun with:\n```bash\npytest\n```\n\nFor type safety, ensure all test functions have type annotations — CI runs `mypy --strict` on tests too.",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "pytest"
+          ],
+          "noises": []
+        }
+      },
+      {
+        "turn": "T4",
+        "query": "How do I build the frontend bundle for production?",
+        "response": "Use `vite build` from the project root. The production configuration is already set in `vite.config.ts`.\n\n```bash\npnpm run build\n```\n\nThis outputs the bundle to `dist/`. The CI pipeline runs this automatically before deploying to EKS.",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "vite"
+          ],
+          "noises": []
+        }
+      },
+      {
+        "turn": "T5",
+        "query": "How do I add a new Python library as a dependency?",
+        "response": "Use `poetry add <package-name>`. This updates `pyproject.toml` and `poetry.lock` automatically. Commit both files.\n\nFor a dev-only dependency (e.g., testing), add `--group dev`.\n\nExample:\n```\npoetry add requests\npoetry add pytest --group dev\n```",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "poetry"
+          ],
+          "noises": []
+        }
+      },
+      {
+        "turn": "T6",
+        "query": "How do I write a component snapshot test?",
+        "response": "Use `vitest` with the `.snap` extension. Example:\n\n```ts\n// Button.test.tsx\nimport { render } from '@testing-library/react';\nimport { describe, it, expect } from 'vitest';\nimport Button from './Button';\n\ndescribe('Button', () => {\n  it('renders correctly', () => {\n    const { container } = render(<Button label=\"Click me\" />);\n    expect(container).toMatchSnapshot();\n  });\n});\n```\n\nRun with `pnpm vitest`. Snapshots are stored in `__snapshots__/` directory with `.snap` extension.",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "vitest"
+          ],
+          "noises": []
+        }
+      }
+    ]
+  },
+  "mode_b": {
+    "system_chars": 206,
+    "results": [
+      {
+        "turn": "T1",
+        "query": "How do I set up linting for a new Python project?",
+        "response": "Use `ruff` for linting. Add a `pyproject.toml` with:\n\n```toml\n[tool.ruff]\nline-length = 88\ntarget-version = \"py311\"\n\n[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\", \"N\", \"W\"]\n```\n\nThen run:\n```bash\nruff check .\n```\n\nFor pre-commit integration, add to `.pre-commit-config.yaml`:\n```yaml\n- repo: https://github.com/astral-sh/ruff-pre-commit\n  rev: v0.1.0\n  hooks:\n    - id: ruff\n```",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "ruff"
+          ],
+          "noises": []
+        },
+        "recalled": [
+          "Python projects use ruff for linting",
+          "The frontend build tool is vite for all projects",
+          "The package manager for all JS projects is pnpm workspace",
+          "JS/TS projects use eslint and prettier for code style"
+        ],
+        "interference_leaked": [],
+        "recall_block_chars": 402
+      },
+      {
+        "turn": "T2",
+        "query": "What package manager should I use for a JavaScript project?",
+        "response": "pnpm workspace.",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "pnpm"
+          ],
+          "noises": []
+        },
+        "recalled": [
+          "The package manager for all JS projects is pnpm workspace",
+          "Python projects use ruff for linting",
+          "JS/TS projects use eslint and prettier for code style",
+          "The frontend build tool is vite for all projects",
+          "A handful of backend test helpers are written in JS and use the mocha runner"
+        ],
+        "interference_leaked": [
+          "A handful of backend test helpers are written in JS and use the mocha runner"
+        ],
+        "recall_block_chars": 492
+      },
+      {
+        "turn": "T3",
+        "query": "How do I write unit tests in Python?",
+        "response": "Use pytest. Create test files named `test_*.py` and place shared fixtures in `tests/conftest.py`. Run tests with `pytest`.",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "pytest"
+          ],
+          "noises": []
+        },
+        "recalled": [
+          "Python projects use ruff for linting",
+          "Python tests run with pytest; all shared fixtures live in tests/conftest.py",
+          "Several Python backend services need npm available in the container to invoke frontend assets",
+          "Helm charts are stored in the infra/helm/ directory",
+          "Frontend tests use vitest; snapshot files have the .snap extension"
+        ],
+        "interference_leaked": [
+          "Several Python backend services need npm available in the container to invoke frontend assets"
+        ],
+        "recall_block_chars": 543
+      },
+      {
+        "turn": "T4",
+        "query": "How do I build the frontend bundle for production?",
+        "response": "Use `pnpm build` in the project root. This runs the Vite production build configured in `vite.config.ts`.",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "vite"
+          ],
+          "noises": []
+        },
+        "recalled": [
+          "The frontend build tool is vite for all projects",
+          "The package manager for all JS projects is pnpm workspace",
+          "Python projects use ruff for linting",
+          "Frontend tests use vitest; snapshot files have the .snap extension",
+          "JS/TS projects use eslint and prettier for code style"
+        ],
+        "interference_leaked": [],
+        "recall_block_chars": 482
+      },
+      {
+        "turn": "T5",
+        "query": "How do I add a new Python library as a dependency?",
+        "response": "Use `poetry add <package-name>`. This will update `pyproject.toml` and `poetry.lock`. Commit both files.",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "poetry"
+          ],
+          "noises": []
+        },
+        "recalled": [
+          "Python projects use ruff for linting",
+          "Python dependencies are managed with poetry; always commit poetry.lock to git"
+        ],
+        "interference_leaked": [],
+        "recall_block_chars": 293
+      },
+      {
+        "turn": "T6",
+        "query": "How do I write a component snapshot test?",
+        "response": "Use Vitest with a `.test.ts` file. Example:\n\n```ts\nimport { render } from '@testing-library/react';\nimport MyComponent from './MyComponent';\n\nit('matches snapshot', () => {\n  const { container } = render(<MyComponent />);\n  expect(container).toMatchSnapshot();\n});\n```\n\nRun with `npx vitest`. Snapshots are saved as `.snap` files alongside the test.",
+        "score": {
+          "correct": true,
+          "clean": true,
+          "passed": true,
+          "hits": [
+            "vitest"
+          ],
+          "noises": []
+        },
+        "recalled": [
+          "Frontend tests use vitest; snapshot files have the .snap extension",
+          "A handful of backend test helpers are written in JS and use the mocha runner",
+          "Connection pooling is managed by pgBouncer with a maximum of 20 connections"
+        ],
+        "interference_leaked": [
+          "A handful of backend test helpers are written in JS and use the mocha runner"
+        ],
+        "recall_block_chars": 411
+      }
+    ]
+  }
+}
