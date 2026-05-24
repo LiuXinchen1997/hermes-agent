@@ -112,6 +112,10 @@ memory-embeddings = ["fastembed>=0.3.0"]
 | uv | 最新 | 推荐的包管理器，[安装文档](https://docs.astral.sh/uv/) |
 | Node.js | 20+ | 可选，仅浏览器工具需要 |
 
+> **两种部署路径**：
+> - **A. 已经装过 Hermes**（pip 装的 / NousResearch 仓库 clone 的 / `setup-hermes.sh` 装的）→ 直接看下方 [已有安装如何切换到带 tiering 的版本](#已有安装如何切换到带-tiering-的版本)
+> - **B. 全新机器，从零开始** → 按"第一步—第五步"走
+
 ### 第一步：克隆并安装
 
 本次 Tiered Memory 改动**还未合并到上游 NousResearch/hermes-agent**，必须从包含改动的 fork 克隆：
@@ -235,3 +239,113 @@ done
 # 实时跟踪召回指标
 tail -f ~/.hermes/logs/memory_metrics.jsonl
 ```
+
+---
+
+## 已有安装如何切换到带 tiering 的版本
+
+`~/.hermes/`（配置、memories、skills、logs、cron）**不需要动**——本次改动只换了代码层，原有数据全部保留并会自动迁移（旧 `MEMORY.md` → 新 `WORKING.jsonl`）。
+
+根据你之前怎么装的 Hermes，选对应的路径：
+
+### 场景 A：原来是 `pip install hermes-agent`
+
+```bash
+# 1. 卸载 PyPI 上的官方版
+pip uninstall hermes-agent
+
+# 2. 克隆 fork 并以可编辑模式重装
+git clone --recurse-submodules https://github.com/LiuXinchen1997/hermes-agent.git ~/hermes-agent-tiered
+cd ~/hermes-agent-tiered
+uv venv venv --python 3.11
+export VIRTUAL_ENV="$(pwd)/venv"
+uv pip install -e ".[all,dev,memory-embeddings]"
+
+# 3. 让 hermes 命令指向新装的
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+```
+
+`~/.hermes/config.yaml` 不动，下面的"开启 tiering 配置"那一步照走。
+
+### 场景 B：已经 clone 了 NousResearch/hermes-agent 在本地
+
+在原仓库目录里加我的 fork 作为新 remote，把 tiering 改动 merge 进来：
+
+```bash
+cd /path/to/your/hermes-agent  # 你已有的 NousResearch clone
+
+# 加我的 fork 作为新 remote
+git remote add tiered git@github.com:LiuXinchen1997/hermes-agent.git
+git fetch tiered
+
+# 切到一个本地分支再合并（避免污染你的 main）
+git checkout -b try-tiering
+git merge tiered/main
+
+# 如果以前没有 editable 安装，做一下
+uv pip install -e ".[all,dev,memory-embeddings]"
+```
+
+如果 merge 有冲突，多半是 `pyproject.toml` 的 `optional-dependencies` 段。挑一个保留即可。
+
+### 场景 C：用 `setup-hermes.sh` 一键装的
+
+`setup-hermes.sh` 默认从 NousResearch clone 到 `~/hermes-agent`。两种做法：
+
+```bash
+# 做法 1（推荐）：在原目录加 remote 合并（参照场景 B 步骤）
+cd ~/hermes-agent
+git remote add tiered git@github.com:LiuXinchen1997/hermes-agent.git
+git fetch tiered
+git checkout -b try-tiering
+git merge tiered/main
+# venv 已经存在不用动，但要刷新依赖：
+~/.hermes/venv/bin/pip install -e ".[memory-embeddings]" --upgrade
+
+# 做法 2：直接 reset 到 fork main（**会丢本地未提交改动**）
+cd ~/hermes-agent
+git remote set-url origin git@github.com:LiuXinchen1997/hermes-agent.git
+git fetch origin
+git reset --hard origin/main
+~/.hermes/venv/bin/pip install -e ".[memory-embeddings]" --upgrade
+```
+
+### 三个场景都一样：开启 tiering 配置
+
+打开 `~/.hermes/config.yaml`，在 `memory:` 段下追加本文档 [第三步](#第三步开启三层记忆tiered-memory) 给出的 `tiering:` 配置块（可以照搬，全部默认值就够用）。
+
+### 验证
+
+```bash
+# 1. 检查 hermes 用的是不是 fork 版本
+which hermes
+python3 -c "import tools.memory_tiered_store; print('tiering available')"
+# 应该输出 "tiering available"，否则说明装的还是 NousResearch 版
+
+# 2. 启动 agent，告诉它一件事让它记住
+hermes
+> 记住我喜欢用 ruff 不喜欢 black
+
+# 3. 退出后看磁盘
+ls -l ~/.hermes/memories/WORKING.jsonl
+# 应该存在，且内容包含你刚说的话
+
+# 4. 看指标
+tail -3 ~/.hermes/logs/memory_metrics.jsonl
+# 应该看到 {"event":"add", ...} 和后续的 {"event":"recall", ...}
+```
+
+### 如何回滚到原版 Hermes
+
+只需要把 config 里的 tiering 关掉：
+
+```yaml
+memory:
+  tiering:
+    enabled: false   # 关闭后所有 memory 操作回到平铺 MemoryStore
+```
+
+`WORKING.jsonl` / `COLD.jsonl` 留在盘上没人读，旧的 `MEMORY.md` 还在（迁移时不删），重新生效。
+
+如果想彻底卸载，按你原来的安装方式反过来：场景 A 用 `pip uninstall hermes-agent` + 重新 `pip install hermes-agent`；场景 B/C 切回 `main` 分支即可（`git checkout main`，删 `try-tiering`）。
