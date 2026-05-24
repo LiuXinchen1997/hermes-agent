@@ -140,8 +140,23 @@ venv/bin/hermes
 
 首次启动时若已有旧 `~/.hermes/memories/MEMORY.md`，会自动迁移为 `WORKING.jsonl`（原文件保留作备份）。
 
-跑测试：
+跑单元测试：
 
 ```bash
 venv/bin/pytest tests/tools/test_memory_tiering.py -v
 ```
+
+跑优化效果对比实验（TC-01 / TC-03A/C / TC-04 / TC-05，无需 LLM API key）：
+
+```bash
+venv/bin/python my-task/run_all_tests.py
+```
+
+跑多轮对话一致性实验（TC-02，需要 DeepSeek API key）：
+
+```bash
+# 将 DEEPSEEK_API_KEY 替换为实际 key（脚本顶部也可直接编辑）
+DEEPSEEK_API_KEY=sk-xxx venv/bin/python my-task/tc02_live_test.py
+```
+
+实验结果详见 `my-task/experiment-report.md`。
