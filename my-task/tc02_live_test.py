@@ -26,7 +26,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from openai import OpenAI
 
-DEEPSEEK_API_KEY = "sk-5173fcd2ea114fd895f756b8e404587e"
+import os
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+if not DEEPSEEK_API_KEY:
+    raise SystemExit("请先设置环境变量 DEEPSEEK_API_KEY，例如：\n  export DEEPSEEK_API_KEY=sk-xxx")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 MODEL = "deepseek-chat"
 
