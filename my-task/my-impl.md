@@ -48,7 +48,7 @@ score(e) = α · cosine(embed(msg), e.embedding)
 
 召回命中的条目自动更新 `last_recalled_at` 和 `recall_count`（持久化到磁盘）。
 
-`render_block()` 将命中条目格式化为 `<recalled-memory>` XML 块，注入用户消息头部。
+`render_block()` 将命中条目格式化为 `<memory-context>` XML 块，注入用户消息头部。
 
 ### `tools/memory_metrics.py` — 指标记录器
 
@@ -80,7 +80,7 @@ memory.tiering.enabled = false →  原有 MemoryStore（不变）
 在 `run_conversation()` 组装 API 请求之前，若 `_memory_retriever` 存在：
 
 1. 对当前用户消息做 recall，取得相关 T1 条目
-2. 将 `<recalled-memory>` 块拼接到 **API 发送的 user_message 头部**
+2. 将 `<memory-context>` 块拼接到 **API 发送的 user_message 头部**
 3. **不修改 `persist_user_message`**，确保召回块不会污染对话历史、外部记忆同步或 background review 的对话快照
 
 ### `pyproject.toml` — 新增可选依赖
@@ -114,8 +114,10 @@ memory-embeddings = ["fastembed>=0.3.0"]
 
 ### 第一步：克隆并安装
 
+本次 Tiered Memory 改动**还未合并到上游 NousResearch/hermes-agent**，必须从包含改动的 fork 克隆：
+
 ```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+git clone --recurse-submodules https://github.com/LiuXinchen1997/hermes-agent.git
 cd hermes-agent
 
 # 创建 Python 3.11 虚拟环境
@@ -125,6 +127,8 @@ export VIRTUAL_ENV="$(pwd)/venv"
 # 安装所有依赖（含开发工具）
 uv pip install -e ".[all,dev]"
 ```
+
+> 上游 NousResearch 仓库不含本次改动；从那里克隆得到的是不带 Tiered Memory 的原版 Hermes。后续如果上游合并了本次 PR，可以直接从 `NousResearch/hermes-agent` 克隆。
 
 如果需要启用**语义嵌入**（提升 Tiered Memory 召回质量），额外安装：
 
@@ -158,26 +162,35 @@ echo "ANTHROPIC_API_KEY=你的key" >> ~/.hermes/.env
 memory:
   memory_enabled: true
   user_profile_enabled: true
-  memory_char_limit: 2200
-  user_char_limit: 1375
+  user_char_limit: 1375          # T0 (USER.md) 上限；T1 启用后仍生效
+  # memory_char_limit: 2200      # 旧的 MEMORY.md 上限；tiering 开启后**不再使用**
 
   # ── 三层记忆（本次改动新增）────────────────────
   tiering:
-    enabled: true            # 总开关；false 则退回旧的平铺 MemoryStore
-    prefer_local: true       # true = 优先用本地 fastembed；false = 直接用 Jaccard
-    t1_char_limit: 3000      # T1 工作记忆字符上限，超出触发驱逐到 T2
-    tau_days: 14.0           # 近期衰减半衰期（天）
-    metrics_enabled: true    # 写指标到 ~/.hermes/logs/memory_metrics.jsonl
+    enabled: true                # 总开关；false 则退回旧的平铺 MemoryStore
+    prefer_local: true           # true = 优先用本地 fastembed；false = 直接用 Jaccard
+    t1_char_limit: 3000          # T1 工作记忆字符上限，超出触发驱逐到 T2
+    metrics_enabled: true        # 写指标到 ~/.hermes/logs/memory_metrics.jsonl
+    # 下面三个是 *eviction* 打分参数（决定哪条降级到 T2）
+    tau_days: 14.0               # 近期衰减半衰期（天）
+    beta: 0.2                    # 近期衰减权重
+    gamma: 0.1                   # 召回频次权重
 
     retrieval:
-      enabled: true          # 每轮对话前是否自动召回
-      k: 5                   # 最多召回 5 条
-      min_similarity: 0.5    # 相似度阈值（fastembed）；Jaccard 建议改为 0.1
-      alpha: 0.7             # 语义相似度权重
-      beta: 0.2              # 近期衰减权重
-      gamma: 0.1             # 召回频次权重
-      tau_days: 14.0
+      enabled: true              # 每轮对话前是否自动召回
+      k: 5                       # 最多召回 5 条
+      min_similarity: 0.5        # 相似度阈值（fastembed）；Jaccard 建议改为 0.1
+      # 下面四个是 *recall* 打分参数（决定哪条注入到 user_message）
+      alpha: 0.7                 # 语义相似度权重
+      beta: 0.2                  # 近期衰减权重
+      gamma: 0.1                 # 召回频次权重
+      tau_days: 14.0             # 近期衰减半衰期
 ```
+
+> Tiering 开启后，`memory_char_limit` 字段被忽略（T1 用独立的 `t1_char_limit`）。`user_char_limit` 仍然作用于 T0（USER.md）。
+>
+> `tiering.{tau_days, beta, gamma}` 用于 **eviction**（决定哪条 T1 条目降级到 T2）；
+> `tiering.retrieval.{tau_days, alpha, beta, gamma}` 用于 **recall**（决定每轮哪些条目注入到 user_message）。两组参数互相独立，可以分别调。
 
 ### 第四步：运行 Agent
 
@@ -212,8 +225,12 @@ pytest tests/tools/test_memory_tiering.py -v
 启动 agent 后，告诉它记住一些事情（例如"记住我喜欢 Python"），然后在新对话中问一个相关问题。如果 `~/.hermes/memories/WORKING.jsonl` 文件存在并有内容，且 `~/.hermes/logs/memory_metrics.jsonl` 中出现了 `"event":"recall"` 的记录，说明三层记忆已正常工作。
 
 ```bash
-# 查看 T1 工作记忆内容
-cat ~/.hermes/memories/WORKING.jsonl | python3 -m json.tool
+# 查看 T1 工作记忆内容（JSONL 一行一条，单独 pretty-print 每行）
+cat ~/.hermes/memories/WORKING.jsonl | while IFS= read -r line; do
+  echo "$line" | python3 -m json.tool
+done
+# 或者用 jq：
+# jq -s . ~/.hermes/memories/WORKING.jsonl
 
 # 实时跟踪召回指标
 tail -f ~/.hermes/logs/memory_metrics.jsonl

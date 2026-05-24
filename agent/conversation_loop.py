@@ -306,7 +306,7 @@ def run_conversation(
 
     # ── Memory retrieval (tiering opt-in) ───────────────────────────────
     # When memory.tiering.enabled is on and the retriever was created
-    # successfully in agent_init, prepend a <recalled-memory> block to the
+    # successfully in agent_init, prepend a <memory-context> block to the
     # API-bound user_message — but NOT to persist_user_message, so the
     # block doesn't pollute session history, the background_review fork's
     # conversation snapshot, or external memory provider sync_turn() calls.

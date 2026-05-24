@@ -1102,7 +1102,7 @@ def init_agent(
                             metrics=metrics,
                         )
                         agent._memory_store.load_from_disk()
-                        # Per-turn retriever (recall + <recalled-memory> injection)
+                        # Per-turn retriever (recall + <memory-context> injection)
                         retrieval_cfg = (tiering_cfg.get("retrieval") or {})
                         if bool(retrieval_cfg.get("enabled", True)):
                             agent._memory_retriever = MemoryRetriever(

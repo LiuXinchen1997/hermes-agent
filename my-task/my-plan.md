@@ -23,7 +23,7 @@ Memory 子系统当前实现的三个结构性缺陷：
 
 | Tier | 落地文件 | 上限 | 注入策略 |
 |---|---|---|---|
-| **T0** 长期用户画像 | `USER.md` (沿用) | 500 字符 (硬) | 会话起始一次性 freeze，整轮注入 system prompt |
+| **T0** 长期用户画像 | `USER.md` (沿用) | 1375 字符（沿用 `MemoryStore.user_char_limit`，保持向后兼容；可在 config 收紧到 500） | 会话起始一次性 freeze，整轮注入 system prompt |
 | **T1** 工作记忆 | `WORKING.jsonl` (新) | 3000 字符 (软) | 每轮按相关度召回 top-5，注入 user message 头部 |
 | **T2** 冷存档 | `COLD.jsonl` (新) | 无 | 不主动注入，`session_search` 可命中 |
 
@@ -50,19 +50,19 @@ score(e) = α · cosine(embed(msg), e.embedding)
 ```
 
 - 默认参数：α=0.7, β=0.2, γ=0.1, τ_recency=14d
-- 阈值过滤：cosine < 0.3 的 entry 一律不进 top-5
+- 阈值过滤：默认 `min_similarity=0.5`（BGE-family embedding 实测 random pairs cosine ~0.3-0.4，**不是 0**——0.5 是经验噪声底；keyword Jaccard backend 用 0.1）；低于阈值的 entry 一律不进 top-5
 - 副作用：召回命中的 entry 更新 `last_recalled_at`、`recall_count++`
 - 召回结果为空时**完全不注入**（避免空块占 token）
 
 非空时注入到 user message 头部，格式：
 
 ```
-<recalled-memory>
+<memory-context>
 [System note: 以下是系统从历史记忆召回的相关条目，不是用户当前输入。]
 - (3 days ago) 用户偏好用 pnpm 安装 npm 包，不用 npm/yarn
 - (2 weeks ago) 项目计划 6 月底发 v2.0，期间避免大改架构
 - (5 days ago) 团队使用 ruff 做 Python lint
-</recalled-memory>
+</memory-context>
 ```
 
 - 带 system note 防止模型把召回内容误读为用户当前输入
@@ -83,7 +83,7 @@ T1 → T2 是 entry 完整搬迁（包括 embedding），T2 保留所有 metadat
 
 - 默认 `BAAI/bge-small-zh-v1.5`，512-dim
 - 加载方式：`fastembed` + ONNX runtime，on-disk 模型 ~95MB / 常驻 ~250MB
-- fallback：模型加载失败（依赖缺失 / 平台不兼容）→ 退到 BM25 关键词检索
+- fallback：模型加载失败（依赖缺失 / 平台不兼容）→ 退到关键词检索（Jaccard token 重叠，无外部依赖）
 
 中英文混合场景目前先用 `bge-small-zh`（对中文 query 优化，但也能处理英文，质量略降）。Demo 阶段不做双模型分别索引。
 
@@ -104,12 +104,12 @@ user msg ──► MemoryRetriever.recall(msg, k=5)
                   │
                   ├─ embed(msg) 用 BGE-small
                   ├─ cosine on T1 embeddings + recency/freq 加权
-                  ├─ filter: cosine < 0.3 丢弃
+                  ├─ filter: cosine < min_similarity（默认 0.5）丢弃
                   ▼
               top-K entries（可能为空）
                   │
                   ▼
-         非空 → 注入 <recalled-memory> 到 user message 头部
+         非空 → 注入 <memory-context> 到 user message 头部
                   │
                   ▼
               LLM API call
@@ -132,7 +132,7 @@ memory(add):
 
 | 项 | 影响 |
 |---|---|
-| 每轮新增 `<recalled-memory>` 块（非空时） | +300~500 tokens |
+| 每轮新增 `<memory-context>` 块（非空时） | +300~500 tokens |
 | 不再全量注入 T1 旧内容 | -1000~2000 tokens（T1 非空时） |
 | 本地 embedding 推理 | 8-15ms / 次（CPU） |
 | 索引常驻内存 | ~250MB |
@@ -151,8 +151,8 @@ memory(add):
 
 | 失败模式 | 处理 |
 |---|---|
-| embedding 模型加载失败 | 自动降级 BM25 关键词检索 |
-| 召回噪声（top-K 都不相关） | cosine 阈值 0.3 拦截；不注入空块 |
+| embedding 模型加载失败 | 自动降级到 Jaccard 关键词检索 |
+| 召回噪声（top-K 都不相关） | `min_similarity` 阈值（fastembed 默认 0.5 / Jaccard 0.1）拦截；不注入空块 |
 | T2 文件膨胀 | 本期不处理（不进 prompt 不影响 token cost） |
 
 ---

@@ -56,7 +56,7 @@ print(f'T2 entries: {len(lines)}, all tier=2:', all(e[\"tier\"]==2 for e in line
 
 ## TC-02 · 多轮对话的相关性一致性
 
-**对应改动**：`conversation_loop.py` —— 每轮在 user_message 前注入 `<recalled-memory>` 块，只含语义相关条目，而非全量。
+**对应改动**：`conversation_loop.py` —— 每轮在 user_message 前注入 `<memory-context>` 块，只含语义相关条目，而非全量。
 
 **前置记忆**（8 条，Python / JS 两组正交）：
 
@@ -302,7 +302,7 @@ with tempfile.TemporaryDirectory() as tmp:
 ```
 
 **如果隔离失败**（即删掉 `persist_user_message = user_message` 那行）会发生什么：
-- background_review fork 看到的对话历史含 `<recalled-memory>` 脚手架标签
+- background_review fork 看到的对话历史含 `<memory-context>` 脚手架标签
 - 外部 memory provider `sync_turn()` 收到带召回块的消息，可能产生重复记忆
 - 多轮 session 历史中会出现大量内部注入内容，干扰 context compressor
 
